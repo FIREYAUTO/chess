@@ -1,0 +1,944 @@
+<style>
+#screen {
+	border:1px solid #000000;
+    image-rendering:pixelated;
+}
+</style>
+<canvas id="screen"></canvas>
+<div id="output"></div>
+<script>
+
+//{{ Object Globals }}\\
+
+function Assign(Source,Target){
+	for(let Key in Target){
+		Source[Key] = Target[Key];	
+	}
+}
+
+function log(a){
+	let p = document.createElement("p");
+            p.innerHTML=String(a);
+            document.getElementById("output").appendChild(p);
+}
+
+async function wait(Time=1){
+	return await new Promise(r=>setTimeout(r,Time*1000));
+}
+
+//{{ Vector Class }}\\
+
+class BaseVector {
+	constructor(MathProperties=[]){let self=this;self._MathProperties=MathProperties;for(let Name of MathProperties)Object.defineProperty(self,Name.toUpperCase(),{get:()=>self[Name],set:v=>self[Name]=v})}
+	_mathOp(v,cl,a=[]){let mp=this._MathProperties,p=[],c=this.constructor,is=v instanceof c;for(let n of mp)p.push(cl(this[n],is?v[n]:v,...a));return new c(...p)}
+	Add(v){return this._mathOp(v,(a,b)=>a+b)}
+	Sub(v){return this._mathOp(v,(a,b)=>a-b)}
+	Mul(v){return this._mathOp(v,(a,b)=>a*b)}
+	Div(v){return this._mathOp(v,(a,b)=>a/b)}
+	Mod(v){return this._mathOp(v,(a,b)=>a%b)}
+	Pow(v){return this._mathOp(v,(a,b)=>a**b)}
+	Lerp(v,t){return this._mathOp(v,(a,b,t)=>Math.lerp(a,b,t),t)}
+	Eqs(v){let mp=this._MathProperties,c=this.constructor;if(!(v instanceof c))return false;for(let n of mp)if(this[n]!=v[n])return false;return true}
+	Floor(){return this._mathOp(this,(a,b)=>Math.floor(a))}
+	Ceil(){return this._mathOp(this,(a,b)=>Math.ceil(a))}
+	Round(){return this._mathOp(this,(a,b)=>Math.round(a))}
+	toString(){return this._MathProperties.map(x=>this[x]).join(",")}
+	ToArray(){return this._MathProperties.map(x=>this[x])}
+}
+
+class Vector extends BaseVector {
+	constructor(x=0,y=0){super(["x","y"]);Assign(this,{x,y})}
+	get Magnitude(){return Math.sqrt((this.x**2)+(this.y**2))}
+	Normalize(){return this.Div(this.Magnitude)}
+}
+
+class Color extends BaseVector {
+	constructor(r=0,g=0,b=0,a=1){super(["r","g","b","a"]);Assign(this,{r,g,b,a})}
+    toColor(){return`rgba(${this.r},${this.g},${this.b},${this.a})`}
+}
+
+//{{ ScreenManager Class }}\\
+
+class ScreenManager {
+	constructor(Screen){
+    	this.Screen=Screen,
+        this.Context=Screen.getContext("2d"),
+        this.__Width=0,
+        this.__Height=0,
+        this.__Size=new Vector();
+        this.SetSize(100,100);
+        Screen.addEventListener("mousedown",Event=>{
+        	let MousePosition=this.CalculateMousePosition(Event);
+            this.Player.OnClick(MousePosition);
+        });
+    }
+    set Width(Value){
+    	this.__Width=Value;
+        this.Screen.width=this.Screen.style.width=Value;
+        this.__Size.x=Value;
+    }
+    get Width(){
+    	return this.__Width;
+    }
+    get Height(){
+    	return this.__Height;
+    }
+    set Height(Value){
+    	this.__Height=Value;
+        this.Screen.height=this.Screen.style.height=Value;
+        this.__Size.y=Value;
+    }
+    SetSize(Width,Height){
+    	this.Width=Width,
+        this.Height=Height;
+    }
+    get Size(){
+    	this.__Size;
+    }
+    RenderVector(Position){
+    	let {BoardSize,__Size:Size}=this;
+        let Ratio = Size.Div(BoardSize);
+        return Position.Mul(Ratio);
+    }
+    FromRenderVector(Position){
+    	let {BoardSize,__Size:Size}=this;
+        let Ratio=Size.Div(BoardSize);
+        return Position.Div(Ratio);
+    }
+    set FillStyle(Value){
+    	if(Value instanceof Color)Value=Value.toColor();
+    	this.Context.fillStyle=Value;
+    }
+    Clear(){
+    	this.Context.clearRect(0,0,this.Width,this.Height);
+    }
+    Draw(Options){
+    	let {Context}=this;
+        let {Position,Size,Method,Arguments}=Options;
+        Position=this.RenderVector(Position);
+        Size=this.RenderVector(Size);
+        Context.beginPath();
+        Context[Method](...Arguments,Position.x,Position.y,Size.x,Size.y);
+        Context.closePath();
+    }
+    Rect(Options){
+    	if(Options.Color)this.FillStyle=Options.Color;
+    	Options.Method="fillRect";
+        this.Draw(Options);
+    }
+    Image(Options){
+    	let {Context}=this;
+    	Options.Method="drawImage";
+        Options.Arguments=[Options.Image];
+        this.Draw(Options);
+    }
+    CalculateMousePosition(Event){
+    	let Element=Event.target;
+        let Rect=Element.getBoundingClientRect();
+        return this.FromRenderVector(new Vector(Event.clientX-Rect.left,Event.clientY-Rect.top)).Floor();
+    }
+}
+
+//{{ Game Class }}\\
+
+class ChessGame extends ScreenManager {
+	constructor(Screen){
+    	super(Screen);
+        this.BoardSize=new Vector(8,8),
+        this.BoardColors={
+        	Even:new Color(100,100,100,1),
+            Odd:new Color(200,200,200,1),
+        },
+        this.Pieces=[],
+        this.BaseSize=new Vector(1,1),
+        this.PieceSize=new Vector(0.8,0.8),
+        this.PieceColors={
+        	White:new Color(255,255,255,1),
+            Black:new Color(0,0,0,1),
+        };
+        this.MoveColor=new Color(0,255,0,0.3),
+        this.InvalidMoveColor=new Color(255,0,0,0.3);
+    }
+    AddPiece(Piece){
+    	this.Pieces.push(Piece);
+    }
+    RemovePiece(Piece){
+    	let Index=this.Pieces.indexOf(Piece);
+        if(Index>=0){
+        	this.Pieces.splice(Index,1);
+        }
+    }
+    GetPieceAtPosition(Position){
+    	for(let Piece of this.Pieces)if(Piece.Position.Eqs(Position))return Piece;
+    }
+    DrawBoard(){
+    	try{
+    	let {BoardSize}=this;
+    	for(let y=0;y<=BoardSize.y-1;y++){
+        	for(let x=0;x<=BoardSize.x-1;x++){
+            	let Pos=new Vector(x,y);
+                let Piece=this.GetPieceAtPosition(Pos);
+            	this.Rect({
+                	Size:this.BaseSize,
+                    Position:Pos,
+                   	Color:this.BoardColors[(x+y)%2==0?"Even":"Odd"],
+                    Arguments:[],
+                });
+                if(Piece){
+                	this.Image({
+                    	Size:this.PieceSize,
+                        Position:Pos.Add(this.BaseSize.Sub(this.PieceSize).Div(2)),
+                        Color:this.PieceColors[Piece.Color],
+                        Image:Piece.Image,
+                    });
+                }
+            }
+        }
+        if(this.Player&&this.Player.SelectedPiece){
+        	let Piece=this.Player.SelectedPiece;
+            let PT=PieceTypes[Piece.Type];
+            for(let P of PT.Positions){
+            	let Pos = Piece.Position.Add(P);
+                if(this.OffScreen(Pos))continue;
+            	if(PT.CheckPosition(Piece,Pos)){
+                	let PI=this.GetPieceAtPosition(Pos);
+                    if(PI&&PI.Color==Piece.Color){
+                    	this.Rect({
+                    		Position:Pos,
+                        	Size:this.BaseSize,
+                        	Color:this.InvalidMoveColor,
+                       		Arguments:[],
+                    	});
+                   	}else{
+                    	this.Rect({
+                    		Position:Pos,
+                        	Size:this.BaseSize,
+                        	Color:this.MoveColor,
+                        	Arguments:[],
+                    	});
+                    }
+                	
+                }
+            }
+        }
+        }catch(e){
+        	log(e.stack);
+        }
+    }
+    Render(){
+    	this.Clear();
+        this.DrawBoard();
+    }
+    Turn(){
+    	if(!this.Player||!this.Bot)return;
+      	if(this.Player.CanPlay){
+        	this.Player.TakeTurn();
+            this.Bot.CanPlay=true;
+        }else{
+        	this.Bot.TakeTurn();
+            this.Player.CanPlay=true;
+        }
+    }
+    OffScreen(V){
+    	return (V.x<0||V.x>=(this.BoardSize.x))||(V.y<0||V.y>=(this.BoardSize.y))
+    }
+}
+
+//{{ ChessPiece Class }}\\
+
+const PieceTypes = {
+	Pawn:{
+    	Positions:[
+        	new Vector(0,1),
+            new Vector(0,-1),
+            new Vector(-1,-1),
+            new Vector(1,-1),
+            new Vector(-1,1),
+            new Vector(1,1),
+            new Vector(0,2),
+            new Vector(0,-2),
+        ],
+        GetPositions:function(self){
+        	let MoveChecks=[],
+                AttackChecks=[],
+                FirstMoveChecks=[];
+        	if(self.User==self.Game.Player){
+            	MoveChecks=[this.Positions[1]],
+                AttackChecks=[this.Positions[2],this.Positions[3]],
+                FirstMoveChecks=[this.Positions[7]];
+            }else{
+            	MoveChecks=[this.Positions[0]],
+                AttackChecks=[this.Positions[4],this.Positions[5]],
+                FirstMoveChecks=[this.Positions[6]];
+            }
+            return [MoveChecks,AttackChecks,FirstMoveChecks];
+        },
+    	CheckPosition:function(self,Position){
+        	let Pos=self.Position;
+            let [MoveChecks,AttackChecks,FirstMoveChecks]=this.GetPositions(self);
+            if(self.FirstMove){
+				for(let P of FirstMoveChecks){
+            		if(Position.Eqs(Pos.Add(P))){
+                    	return !self.PieceInWay(P)&&!self.Game.GetPieceAtPosition(Position);
+                	}
+            	}
+           	}
+            for(let P of MoveChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                    return !self.Game.GetPieceAtPosition(Position)
+                }
+            }
+            for(let P of AttackChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                	return !!self.Game.GetPieceAtPosition(Position);
+                }
+            }
+            return false;
+        },
+    	CheckMove:function(self,Position){
+        	return this.CheckPosition(self,Position);
+        },
+    },
+    Rook:{
+    	Positions:[
+        	new Vector(7,0),
+            new Vector(6,0),
+            new Vector(5,0),
+            new Vector(4,0),
+            new Vector(3,0),
+            new Vector(2,0),
+            new Vector(1,0),
+            new Vector(-1,0),
+            new Vector(-2,0),
+            new Vector(-3,0),
+            new Vector(-4,0),
+            new Vector(-5,0),
+            new Vector(-6,0),
+            new Vector(-7,0),
+            new Vector(0,7),
+            new Vector(0,6),
+            new Vector(0,5),
+            new Vector(0,4),
+            new Vector(0,3),
+            new Vector(0,2),
+            new Vector(0,1),
+            new Vector(0,-1),
+            new Vector(0,-2),
+            new Vector(0,-3),
+            new Vector(0,-4),
+            new Vector(0,-5),
+            new Vector(0,-6),
+            new Vector(0,-7),
+        ],
+        GetPositions:function(self){
+        	let MoveChecks=this.Positions;
+            return [MoveChecks];
+        },
+    	CheckPosition:function(self,Position){
+        	let Pos=self.Position;
+            let [MoveChecks]=this.GetPositions(self);
+            for(let P of MoveChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                	let Piece=self.PieceInWay(P);
+                    if(!Piece)return true;
+                    return Piece==self.Game.GetPieceAtPosition(Position);
+                }
+            }
+            return false;
+        },
+    	CheckMove:function(self,Position){
+        	return this.CheckPosition(self,Position);
+        },
+    },
+    Bishop:{
+    	Positions:[
+        	new Vector(7,-7),
+            new Vector(6,-6),
+            new Vector(5,-5),
+            new Vector(4,-4),
+            new Vector(3,-3),
+            new Vector(2,-2),
+            new Vector(1,-1),
+            new Vector(-1,1),
+            new Vector(-2,2),
+            new Vector(-3,3),
+            new Vector(-4,4),
+            new Vector(-5,5),
+            new Vector(-6,6),
+            new Vector(-7,7),
+            new Vector(7,7),
+            new Vector(6,6),
+            new Vector(5,5),
+            new Vector(4,4),
+            new Vector(3,3),
+            new Vector(2,2),
+            new Vector(1,1),
+            new Vector(-1,-1),
+            new Vector(-2,-2),
+            new Vector(-3,-3),
+            new Vector(-4,-4),
+            new Vector(-5,-5),
+            new Vector(-6,-6),
+            new Vector(-7,-7),
+        ],
+        GetPositions:function(self){
+        	let MoveChecks=this.Positions;
+            return [MoveChecks];
+        },
+    	CheckPosition:function(self,Position){
+        	let Pos=self.Position;
+            let [MoveChecks]=this.GetPositions(self);
+            for(let P of MoveChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                	let Piece=self.PieceInWay(P);
+                    if(!Piece)return true;
+                    return Piece==self.Game.GetPieceAtPosition(Position);
+                }
+            }
+            return false;
+        },
+    	CheckMove:function(self,Position){
+        	return this.CheckPosition(self,Position);
+        },
+    },
+    Queen:{
+    	Positions:[
+        	new Vector(7,-7),
+            new Vector(6,-6),
+            new Vector(5,-5),
+            new Vector(4,-4),
+            new Vector(3,-3),
+            new Vector(2,-2),
+            new Vector(1,-1),
+            new Vector(-1,1),
+            new Vector(-2,2),
+            new Vector(-3,3),
+            new Vector(-4,4),
+            new Vector(-5,5),
+            new Vector(-6,6),
+            new Vector(-7,7),
+            new Vector(7,7),
+            new Vector(6,6),
+            new Vector(5,5),
+            new Vector(4,4),
+            new Vector(3,3),
+            new Vector(2,2),
+            new Vector(1,1),
+            new Vector(-1,-1),
+            new Vector(-2,-2),
+            new Vector(-3,-3),
+            new Vector(-4,-4),
+            new Vector(-5,-5),
+            new Vector(-6,-6),
+            new Vector(-7,-7),
+            new Vector(7,0),
+            new Vector(6,0),
+            new Vector(5,0),
+            new Vector(4,0),
+            new Vector(3,0),
+            new Vector(2,0),
+            new Vector(1,0),
+            new Vector(-1,0),
+            new Vector(-2,0),
+            new Vector(-3,0),
+            new Vector(-4,0),
+            new Vector(-5,0),
+            new Vector(-6,0),
+            new Vector(-7,0),
+            new Vector(0,7),
+            new Vector(0,6),
+            new Vector(0,5),
+            new Vector(0,4),
+            new Vector(0,3),
+            new Vector(0,2),
+            new Vector(0,1),
+            new Vector(0,-1),
+            new Vector(0,-2),
+            new Vector(0,-3),
+            new Vector(0,-4),
+            new Vector(0,-5),
+            new Vector(0,-6),
+            new Vector(0,-7),
+        ],
+        GetPositions:function(self){
+        	let MoveChecks=this.Positions;
+            return [MoveChecks];
+        },
+    	CheckPosition:function(self,Position){
+        	let Pos=self.Position;
+            let [MoveChecks]=this.GetPositions(self);
+            for(let P of MoveChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                	let Piece=self.PieceInWay(P);
+                    if(!Piece)return true;
+                    return Piece==self.Game.GetPieceAtPosition(Position);
+                }
+            }
+            return false;
+        },
+    	CheckMove:function(self,Position){
+        	return this.CheckPosition(self,Position);
+        },
+    },
+    King:{
+    	Positions:[
+        	new Vector(-1,-1),
+            new Vector(-1,1),
+            new Vector(1,1),
+            new Vector(1,-1),
+            new Vector(0,-1),
+            new Vector(0,1),
+            new Vector(1,0),
+            new Vector(-1,0),
+        ],
+        GetPositions:function(self){
+        	let MoveChecks=this.Positions;
+            return [MoveChecks];
+        },
+    	CheckPosition:function(self,Position){
+        	let Pos=self.Position;
+            let [MoveChecks]=this.GetPositions(self);
+            for(let P of MoveChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                	let Piece=self.PieceInWay(P);
+                    if(!Piece)return true;
+                    return Piece==self.Game.GetPieceAtPosition(Position);
+                }
+            }
+            return false;
+        },
+    	CheckMove:function(self,Position){
+        	return this.CheckPosition(self,Position);
+        },
+    },
+    Knight:{
+    	Positions:[
+        	new Vector(2,-1),
+            new Vector(2,1),
+            new Vector(-2,1),
+            new Vector(-2,-1),
+            new Vector(-1,2),
+            new Vector(-1,-2),
+            new Vector(1,2),
+            new Vector(1,-2),
+        ],
+        GetPositions:function(self){
+        	let MoveChecks=this.Positions;
+            return [MoveChecks];
+        },
+    	CheckPosition:function(self,Position){
+        	let Pos=self.Position;
+            let [MoveChecks]=this.GetPositions(self);
+            for(let P of MoveChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                    return true;
+                }
+            }
+            return false;
+        },
+    	CheckMove:function(self,Position){
+        	return this.CheckPosition(self,Position);
+        },
+    },
+	/*
+    Pawn:{
+    	Positions:[
+        	new Vector(0,1),
+        ],
+        GetPositions:function(self){
+        	let MoveChecks=[],
+                AttackChecks=[];
+        	if(self.User==self.Game.Player){
+            	MoveChecks=[this.Positions[1]],
+                AttackChecks=[];
+            }else{
+            	MoveChecks=[this.Positions[0]],
+                AttackChecks=[];
+            }
+            return [MoveChecks,AttackChecks];
+        },
+    	CheckPosition:function(self,Position){
+        	let Pos=self.Position;
+            let [MoveChecks,AttackChecks]=this.GetPositions(self);
+            for(let P of MoveChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                    return !self.PieceInWay(P)
+                }
+            }
+            for(let P of AttackChecks){
+            	if(Position.Eqs(Pos.Add(P))){
+                	return !!self.PieceInWay(P);
+                }
+            }
+            return false;
+        },
+    	CheckMove:function(self,Position){
+        	return this.CheckPosition(self,Position);
+        },
+    },
+    */
+};
+
+class ChessPiece {
+	constructor(Type,Color,Position,User,Game){
+    	this.Type=Type,
+        this.Color=Color,
+        this.Position=Position,
+        this.User=User,
+        this.Game=Game,
+        this.FirstMove=true,
+        this.Image=Game.LoadedImages[Type+Color];
+    }
+    OnClick(User){
+    	if(User!=this.User)return;
+    	this.Game.Render();
+    }
+    CheckMove(Position){
+    	if(this.Position.Eqs(Position))return;
+        let Check=PieceTypes[this.Type].CheckMove(this,Position);
+        if(Check)this.User.MovePiece(Position);
+    }
+    PieceInWay(P){
+    	let {Position:Pos}=this;
+        let NP=new Vector(P.x/Math.abs(P.x),P.y/Math.abs(P.y));
+        if(isNaN(NP.x))NP.x=0;
+        if(isNaN(NP.y))NP.y=0;
+        let PO=Pos.Add(NP),
+        	R=Pos.Add(P);
+        while(!PO.Eqs(R)){
+        	let Piece=this.Game.GetPieceAtPosition(PO);
+            if(Piece)return Piece;
+        	PO=PO.Add(NP);
+        }
+        return false;
+    }
+    toString(){
+    	return `[${this.Type}, ${this.Color}]`;
+    }
+}
+
+//{{ ChessUser Class }}\\
+
+class ChessUser {
+	constructor(Color,Game){
+    	this.Game=Game,
+    	this.Color=Color,
+        this.CanPlay=false,
+        this.Playing=false,
+        this.SelectedPiece=undefined,
+        this.MoveSelected=false;
+    }
+    ClickPiece(Position){
+    	let Piece = this.Game.GetPieceAtPosition(Position);
+        if(!Piece)return;
+        if(Piece.Color!=this.Color)return;
+        this.SelectedPiece=Piece;
+        this.MoveSelected=true;
+        Piece.OnClick(this);
+    }
+    OnClick(Position){
+    	if(this.Game.OffScreen(Position))return;
+    	if(!this.CanPlay){
+        	if(this.Playing){
+            	if(this.MoveSelected&&this.SelectedPiece){
+                	let Piece=this.Game.GetPieceAtPosition(Position);
+                    if(Piece&&Piece.Color==this.SelectedPiece.Color){
+                    	return this.ClickPiece(Position);	
+                    }
+                	this.SelectedPiece.CheckMove(Position);
+                }else this.ClickPiece(Position);
+            } 
+        }
+    }
+    TakeTurn(){
+    	this.CanPlay=false,
+       	this.Playing=true;
+    }
+    MovePiece(Position){
+        if(!this.Playing)return;
+        if(!this.MoveSelected)return;
+        if(!this.SelectedPiece)return;
+        let Piece=this.Game.GetPieceAtPosition(Position);
+        if(Piece){
+        	if(Piece.Color==this.SelectedPiece.Color)return;
+            this.Game.RemovePiece(Piece);
+            if(Piece.Type=="King"){
+            	document.write(this.Game.Player===this?"You won!":"You lost!");
+                return true;
+            }
+        }
+        this.SelectedPiece.Position=Position;
+        this.SelectedPiece.FirstMove=false;
+        this.SelectedPiece=undefined,this.MoveSelected=false;
+        this.Playing=false;
+        this.Game.Render();
+        this.Game.Turn();
+        return true;
+    }
+    GetPieces(){
+    	let Pieces=[];
+        for(let Piece of this.Game.Pieces){
+        	if (Piece.Color==this.Color){
+            	Pieces.push(Piece);
+            }
+        }
+        return Pieces;
+    }
+    GetOtherPieces(){
+    	let Pieces=[];
+        for(let Piece of this.Game.Pieces){
+        	if (Piece.Color!=this.Color){
+            	Pieces.push(Piece);
+            }
+        }
+        return Pieces;
+    }
+}
+
+class ChessBot extends ChessUser {
+	constructor(...Arguments){
+    	super(...Arguments);
+    }
+    async TakeTurn(){
+    	try{
+    	this.CanPlay=false,
+       	this.Playing=true;
+        let Pieces=this.GetPieces(),
+        	Others=this.GetOtherPieces();
+        for(let Piece of Pieces)Piece.Origin=Piece.Position.Add(0);
+        for(let Piece of Others)Piece.Origin=Piece.Position.Add(0);
+        let BestPiece=undefined,BestMove=undefined;
+        for(let Move=1;Move<=this.Game.Difficulty;Move++){
+        	for(let Piece of Pieces){
+            	let PT=PieceTypes[Piece.Type];
+                let Spaces=[],Deaths=[];
+                for(let P of PT.Positions){
+                	let Pos = Piece.Position.Add(P);
+                    if(this.Game.OffScreen(Pos))continue;
+                    if(PT.CheckMove(Piece,Pos)){
+                    	let PI=this.Game.GetPieceAtPosition(Pos);
+                        if(PI&&PI.Color==Piece.Color)continue;
+                        let k=0;
+                        if(PI){
+                        	if(PI.Type=="King"&&Move==1){
+                            	k=1e3;
+                            }else{
+                            	k=1;
+                            }
+                        }
+                    	Spaces.push([Pos,undefined,undefined,k]);
+                    }
+                }
+                for(let Space of Spaces){
+                	Piece.Position=Space[0];
+                	for(let Other of Others){
+                		let OT=PieceTypes[Other.Type];
+                    	for(let O of OT.Positions){
+                    		let OPos = Other.Position.Add(O);
+                            if(this.Game.OffScreen(OPos))continue;
+                        	if(OT.CheckPosition(Other,OPos)){
+                        		let PI=this.Game.GetPieceAtPosition(OPos);
+                            	if(PI&&PI==Piece){
+                            		Deaths.push([Space[0],Other,OPos]);
+                                    break;
+                            	}
+                        	}
+                    	}
+                	}
+                    await wait(1/20);
+                }
+                let D=1e6,SPs=[];
+                for(let Space of Spaces){
+                	let DE=0;
+                	for(let Death of Deaths){
+                    	if(Death[0].Eqs(Space[0])){
+                        	DE++;
+                            Space[1]=Death[1];
+                            Space[2]=Death[2];
+                        }
+                    }
+                    if(DE<=D){
+                    	if(DE!=D)SPs=[];
+                    	D=DE;
+                     	SPs.push(Space);
+                    }
+                }
+                let SP=SPs[Math.floor(Math.random()*(SPs.length))];
+                let K=[];
+                for(let S of SPs){
+                	let F=K.find(x=>x[0].Eqs(S[0]));
+                    if(F){
+                    	F[3]+=S[3];
+                    }else{
+                    	K.push(S);
+                    }
+                }
+                if(K.length>0){
+                	let k=0,Ks=[];
+                    for(let S of SPs){
+                    	if(S[3]>=k){
+                        	if(S[3]!=k)Ks=[];
+                        	k=S[3];
+                            Ks.push(S);
+                        }
+                    }
+                    SP=Ks[Math.floor(Math.random()*Ks.length)];
+                }
+                if(!Piece.Spaces){
+                	Piece.Spaces=Spaces,Piece.Deaths=Deaths;
+                    if(SP){
+                    	Piece.BestMove=SP[0];
+                        SP[3]+=(Piece.Kills||0)
+                    }
+                }else{
+                	D+=Piece.DeathSpaceRatio;
+                }
+                if(SP){
+                	Piece.Position=SP[0];
+                    if(SP[1]&&SP[2]){
+                    	SP[1].Position=SP[2];
+                    }
+                    Piece.DeathSpaceRatio=D;
+                    Piece.Kills=SP[3];
+                }
+                await wait(0.1);
+            }
+        }
+        let Deaths=1e6,
+        	PIs=[];
+        for(let Piece of Pieces){
+        	if(!(Piece.DeathSpaceRatio===undefined)&&Piece.BestMove){
+            	let DSR=Piece.DeathSpaceRatio;
+                if(DSR<=Deaths){
+                	if (DSR!=Deaths){
+                    	PIs=[];	
+                    }
+                	Deaths=DSR;
+                    PIs.push([Piece,Piece.BestMove,Piece.Kills]);
+                }
+            }
+            Piece.Spaces=Pieces.Deaths=Pieces.DeathSpaceRatio=Piece.BestMove=undefined;
+            Piece.Position=Piece.Origin;
+            Piece.Origin=undefined;
+        }
+        for(let Other of Others){
+        	Other.Position=Other.Origin;
+            Other.Origin=undefined;
+        }
+        if(PIs.length>0){
+        	let k=0,Ks=[];
+            for(let P of PIs){
+            	if(P[0].Kills>=k){
+                	if(P[0].Kills!=k)Ks=[];
+                    k=P[0].Kills;
+                    Ks.push(P);
+                }
+            }
+        	let PI = Ks[Math.floor(Math.random()*(Ks.length))];
+            //log(PI);
+        	this.SelectedPiece=PI[0];
+            this.MoveSelected=true;
+            let r=this.MovePiece(PI[1]);
+            if(!r){
+            	return this.TakeTurn();
+            }
+        }
+        }catch(e){
+        	log(e.stack);
+        }
+    }
+}
+
+//{{ Testing }}\\
+
+const RawImageURL = "https://fireyauto.github.io/chess/pieces/";
+let RawPieceTypes="Pawn Rook Knight Bishop King Queen".split(" ");
+const Images = {};
+
+for(let Type of RawPieceTypes){
+	Images[Type+"White"]=Type+"White.png";
+    Images[Type+"Black"]=Type+"Black.png";
+}
+
+const LoadedImages = {};
+
+async function LoadImages(Table){
+	let Loaded = 0;
+    let Count = Object.getOwnPropertyNames(Table).length;
+	for(let k in Table){
+    	let v = Table[k];
+        let img = new Image();
+        Table[k] = img;
+        img.onload=function(){
+        	Loaded++;
+            img.onload=null;
+        }
+        LoadedImages[k]=img;
+        img.src = RawImageURL+v;
+    }
+    return await new Promise(r=>{
+    	let i;
+        i=setInterval(()=>{
+        	if(Loaded>=Count){
+            	clearInterval(i);
+            	r();
+            }
+        },100)
+    })
+}
+
+async function Main(){
+	await LoadImages(Images);
+    const Game = new ChessGame(document.getElementById("screen"));
+	Game.SetSize(320,320);
+    Game.LoadedImages=LoadedImages;
+    Game.Difficulty=3;
+
+	const Player = new ChessUser("White",Game),
+		Bot = new ChessBot("Black",Game);
+	
+	Player.CanPlay=true;
+	
+	Game.Player=Player,Game.Bot=Bot;
+    
+    Game.AddPiece(new ChessPiece("Rook","Black",new Vector(0,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("Knight","Black",new Vector(1,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("Bishop","Black",new Vector(2,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("Queen","Black",new Vector(3,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("King","Black",new Vector(4,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("Bishop","Black",new Vector(5,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("Knight","Black",new Vector(6,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("Rook","Black",new Vector(7,0),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(0,1),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(1,1),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(2,1),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(3,1),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(4,1),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(5,1),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(6,1),Bot,Game));
+    Game.AddPiece(new ChessPiece("Pawn","Black",new Vector(7,1),Bot,Game));
+	
+	Game.Pieces.push(new ChessPiece("Rook","White",new Vector(0,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("Knight","White",new Vector(1,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("Bishop","White",new Vector(2,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("King","White",new Vector(3,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("Queen","White",new Vector(4,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("Bishop","White",new Vector(5,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("Knight","White",new Vector(6,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("Rook","White",new Vector(7,7),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(0,6),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(1,6),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(2,6),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(3,6),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(4,6),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(5,6),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(6,6),Player,Game));
+    Game.Pieces.push(new ChessPiece("Pawn","White",new Vector(7,6),Player,Game));
+	Game.DrawBoard();
+	
+	Game.Turn();
+}
+
+Main();
+
+</script>
